@@ -8,7 +8,11 @@ A Python web crawler that searches for broken links and resources on websites.
 - Validates different types of resources (links, images, stylesheets, scripts)
 - Generates detailed reports of broken resources
 - Provides statistics about the crawl
-- Supports concurrent requests for faster crawling
+- High-performance crawling with:
+  - Response caching to avoid repeated requests
+  - Efficient parallel processing of URLs and resources
+  - Optimized HTML parsing with CSS selectors
+  - Support for lxml parser for faster HTML processing
 - Configurable crawl depth, timeout, and user agent
 - Supports HTTP Basic Authentication for protected sites
 
@@ -21,6 +25,9 @@ cd PyCrawl
 
 # Install the package
 pip install -e .
+
+# For improved performance, install with optional dependencies
+pip install -e . lxml
 ```
 
 ## Usage
@@ -128,6 +135,9 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 # Install development dependencies
 pip install -r requirements.txt
 pip install -e .
+
+# For improved performance during development, install lxml
+pip install lxml
 ```
 
 ### Running Tests

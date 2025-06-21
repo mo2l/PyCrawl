@@ -3,6 +3,9 @@ requests>=2.25.0
 beautifulsoup4>=4.9.0
 urllib3>=1.26.0
 
+# Optional dependencies for improved performance
+lxml>=4.6.0  # Faster HTML parsing
+
 # Development dependencies
 pytest>=6.2.0
 pytest-mock>=3.5.0

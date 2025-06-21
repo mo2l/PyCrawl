@@ -2,12 +2,16 @@
 Main crawler module for PyCrawl - Detects broken links and resources
 """
 import requests
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union, Any
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 import logging
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import time
+from functools import lru_cache
+import re
 
 # Configure logging
 logging.basicConfig(
@@ -74,9 +78,11 @@ class BrokenLinkChecker:
             "User-Agent": self.user_agent
         }
 
+    @lru_cache(maxsize=1024)
     def is_valid_url(self, url: str) -> bool:
         """
         Check if a URL is valid and has the same domain as the base URL.
+        Uses caching to avoid repeated parsing of the same URL.
 
         Args:
             url: URL to check
@@ -85,14 +91,20 @@ class BrokenLinkChecker:
             bool: True if the URL is valid, False otherwise
         """
         try:
+            # Quick check for common invalid URLs
+            if not url or url.startswith(('javascript:', 'mailto:', 'tel:', '#')):
+                return False
+
             parsed_url = urlparse(url)
             return bool(parsed_url.netloc) and parsed_url.netloc == self.base_domain
         except Exception:
             return False
 
+    @lru_cache(maxsize=1024)
     def normalize_url(self, url: str, source_url: Optional[str] = None) -> str:
         """
         Normalize a URL by resolving relative URLs and removing fragments.
+        Uses caching to avoid repeated processing of the same URL.
 
         Args:
             url: URL to normalize
@@ -109,9 +121,10 @@ class BrokenLinkChecker:
         parsed = urlparse(url)
         return parsed._replace(fragment="").geturl()
 
+    @lru_cache(maxsize=1024)
     def fetch_url(self, url: str) -> Tuple[Optional[str], Optional[int], Optional[str]]:
         """
-        Fetch the content of a URL.
+        Fetch the content of a URL with caching.
 
         Args:
             url: URL to fetch
@@ -123,6 +136,7 @@ class BrokenLinkChecker:
             - Error message or None if the request succeeded
         """
         try:
+            logger.debug(f"Fetching URL: {url}")
             response = requests.get(
                 url, 
                 headers=self.headers, 
@@ -138,6 +152,33 @@ class BrokenLinkChecker:
             # For other errors, return None for status code
             return None, None, str(e)
 
+    @lru_cache(maxsize=1024)
+    def _check_url(self, url: str, method: str) -> Tuple[int, Optional[str]]:
+        """
+        Check a URL with caching.
+
+        Args:
+            url: URL to check
+            method: HTTP method to use (HEAD or GET)
+
+        Returns:
+            Tuple containing:
+            - Status code or None if the request failed
+            - Error message or None if the request succeeded
+        """
+        try:
+            logger.debug(f"Checking URL with {method}: {url}")
+            response = requests.request(
+                method, 
+                url, 
+                headers=self.headers, 
+                timeout=self.timeout,
+                auth=self.auth
+            )
+            return response.status_code, None
+        except requests.exceptions.RequestException as e:
+            return 0, str(e)
+
     def check_resource(self, resource: Resource) -> Resource:
         """
         Check if a resource is broken.
@@ -148,41 +189,30 @@ class BrokenLinkChecker:
         Returns:
             Resource: Updated resource with status information
         """
-        try:
-            # For links, we do a HEAD request first to save bandwidth
-            method = "HEAD" if resource.resource_type == "link" else "GET"
-            response = requests.request(
-                method, 
-                resource.url, 
-                headers=self.headers, 
-                timeout=self.timeout,
-                auth=self.auth
-            )
+        # For links, we do a HEAD request first to save bandwidth
+        method = "HEAD" if resource.resource_type == "link" else "GET"
 
-            # If HEAD request fails, try GET as some servers don't support HEAD
-            if method == "HEAD" and response.status_code >= 400:
-                response = requests.get(
-                    resource.url, 
-                    headers=self.headers, 
-                    timeout=self.timeout,
-                    auth=self.auth
-                )
+        # Use cached check
+        status_code, error = self._check_url(resource.url, method)
 
-            resource.status_code = response.status_code
-            resource.is_broken = response.status_code >= 400
+        # If HEAD request fails, try GET as some servers don't support HEAD
+        if method == "HEAD" and status_code >= 400:
+            status_code, error = self._check_url(resource.url, "GET")
 
-            if resource.is_broken:
-                resource.error_message = f"HTTP Error: {response.status_code}"
+        resource.status_code = status_code
+        resource.is_broken = status_code >= 400 or error is not None
 
-        except requests.exceptions.RequestException as e:
-            resource.is_broken = True
-            resource.error_message = str(e)
+        if error:
+            resource.error_message = error
+        elif resource.is_broken:
+            resource.error_message = f"HTTP Error: {status_code}"
 
         return resource
 
     def extract_resources(self, html: str, source_url: str) -> List[Resource]:
         """
         Extract all resources (links, images, scripts, stylesheets) from HTML.
+        Optimized for performance with selective parsing.
 
         Args:
             html: HTML content to parse
@@ -192,13 +222,18 @@ class BrokenLinkChecker:
             List[Resource]: List of resources found in the HTML
         """
         resources = []
-        soup = BeautifulSoup(html, "html.parser")
 
-        # Extract links (a href)
-        for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"]
+        # Use lxml parser for better performance if available
+        try:
+            soup = BeautifulSoup(html, "lxml")
+        except:
+            soup = BeautifulSoup(html, "html.parser")
+
+        # Extract links (a href) - use CSS selector for better performance
+        for a_tag in soup.select("a[href]"):
+            href = a_tag.get("href", "")
             # Skip mailto, tel, javascript, and anchor links
-            if href.startswith(("mailto:", "tel:", "javascript:")) or href == "#":
+            if not href or href.startswith(("mailto:", "tel:", "javascript:")) or href == "#":
                 continue
 
             url = self.normalize_url(href, source_url)
@@ -209,8 +244,10 @@ class BrokenLinkChecker:
             ))
 
         # Extract images (img src)
-        for img_tag in soup.find_all("img", src=True):
-            src = img_tag["src"]
+        for img_tag in soup.select("img[src]"):
+            src = img_tag.get("src", "")
+            if not src:
+                continue
             url = self.normalize_url(src, source_url)
             resources.append(Resource(
                 url=url,
@@ -219,8 +256,10 @@ class BrokenLinkChecker:
             ))
 
         # Extract stylesheets (link rel="stylesheet")
-        for link_tag in soup.find_all("link", rel="stylesheet", href=True):
-            href = link_tag["href"]
+        for link_tag in soup.select("link[rel=stylesheet][href]"):
+            href = link_tag.get("href", "")
+            if not href:
+                continue
             url = self.normalize_url(href, source_url)
             resources.append(Resource(
                 url=url,
@@ -229,8 +268,10 @@ class BrokenLinkChecker:
             ))
 
         # Extract scripts (script src)
-        for script_tag in soup.find_all("script", src=True):
-            src = script_tag["src"]
+        for script_tag in soup.select("script[src]"):
+            src = script_tag.get("src", "")
+            if not src:
+                continue
             url = self.normalize_url(src, source_url)
             resources.append(Resource(
                 url=url,
@@ -243,6 +284,7 @@ class BrokenLinkChecker:
     def crawl(self) -> Dict[str, List[Resource]]:
         """
         Start crawling from the base URL and check for broken links and resources.
+        Uses a more efficient crawling strategy with better parallelism.
 
         Returns:
             Dict[str, List[Resource]]: Dictionary mapping resource types to lists of broken resources
@@ -250,33 +292,135 @@ class BrokenLinkChecker:
         # Add the base URL to the queue
         self.queued_urls.add(self.base_url)
 
-        # Process URLs up to max_depth
-        for depth in range(self.max_depth + 1):
-            logger.info(f"Crawling at depth {depth}/{self.max_depth}")
+        # Track URL depths for BFS crawling
+        url_depths = {self.base_url: 0}
 
-            # Get the URLs to process at this depth
-            urls_to_process = list(self.queued_urls - self.visited_urls)
-            if not urls_to_process:
-                break
+        # Process URLs up to max_depth using a more efficient approach
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit the initial URL
+            future_to_url = {
+                executor.submit(self._process_url_improved, self.base_url, 0): self.base_url
+            }
 
-            # Mark these URLs as visited
-            self.visited_urls.update(urls_to_process)
+            # Mark the initial URL as visited
+            self.visited_urls.add(self.base_url)
 
-            # Clear the queue for the next depth
-            self.queued_urls = set()
+            # Process URLs as they complete
+            while future_to_url:
+                # Wait for the next URL to complete
+                done, _ = concurrent.futures.wait(
+                    future_to_url, 
+                    return_when=concurrent.futures.FIRST_COMPLETED
+                )
 
-            # Process URLs in parallel
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # Process each URL
-                for url in urls_to_process:
-                    executor.submit(self._process_url, url, depth)
+                # Process completed URLs
+                for future in done:
+                    url = future_to_url.pop(future)
+                    depth = url_depths[url]
+
+                    try:
+                        # Get new URLs discovered by this URL
+                        new_urls = future.result()
+
+                        # Only process new URLs if we haven't reached max depth
+                        if depth < self.max_depth:
+                            # Submit new URLs for processing
+                            for new_url in new_urls:
+                                if new_url not in self.visited_urls and new_url not in url_depths:
+                                    # Mark URL as visited and track its depth
+                                    self.visited_urls.add(new_url)
+                                    url_depths[new_url] = depth + 1
+
+                                    # Submit URL for processing
+                                    future_obj = executor.submit(
+                                        self._process_url_improved, new_url, depth + 1
+                                    )
+                                    future_to_url[future_obj] = new_url
+
+                                    # Log progress
+                                    logger.info(
+                                        f"Queued URL: {new_url} (depth: {depth + 1}/{self.max_depth})"
+                                    )
+                    except Exception as e:
+                        logger.error(f"Error processing URL {url}: {e}")
 
         # Return the broken resources grouped by type
         return self._group_broken_resources()
 
+    def _process_url_improved(self, url: str, depth: int) -> Set[str]:
+        """
+        Process a single URL: fetch it, extract resources, and check them.
+        Returns a set of new URLs discovered.
+
+        Args:
+            url: URL to process
+            depth: Current crawl depth
+
+        Returns:
+            Set[str]: Set of new URLs discovered
+        """
+        logger.info(f"Processing URL: {url} (depth: {depth}/{self.max_depth})")
+        new_urls = set()
+
+        start_time = time.time()
+
+        # Fetch the URL
+        html, status_code, error = self.fetch_url(url)
+
+        # If the URL is broken, add it to the broken resources
+        if error:
+            resource = Resource(
+                url=url,
+                resource_type="link",
+                status_code=status_code,
+                is_broken=True,
+                error_message=error
+            )
+            self.broken_resources.append(resource)
+            self.all_resources[url] = resource
+            return new_urls
+
+        # Extract resources from the HTML
+        resources = self.extract_resources(html, url)
+
+        # Log resource extraction time for performance monitoring
+        extraction_time = time.time() - start_time
+        logger.debug(f"Resource extraction for {url} took {extraction_time:.2f}s")
+
+        # Check each resource in parallel
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all resource checks
+            future_to_resource = {
+                executor.submit(self.check_resource, resource): resource 
+                for resource in resources
+            }
+
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(future_to_resource):
+                resource = future_to_resource[future]
+                try:
+                    checked_resource = future.result()
+                    self.all_resources[checked_resource.url] = checked_resource
+
+                    if checked_resource.is_broken:
+                        self.broken_resources.append(checked_resource)
+                    elif checked_resource.resource_type == "link":
+                        # Only add links to the new URLs if they're valid
+                        if self.is_valid_url(checked_resource.url):
+                            new_urls.add(checked_resource.url)
+                except Exception as e:
+                    logger.error(f"Error checking resource {resource.url}: {e}")
+
+        # Log total processing time for performance monitoring
+        total_time = time.time() - start_time
+        logger.debug(f"Total processing for {url} took {total_time:.2f}s")
+
+        return new_urls
+
     def _process_url(self, url: str, depth: int) -> None:
         """
         Process a single URL: fetch it, extract resources, and check them.
+        Legacy method kept for backward compatibility.
 
         Args:
             url: URL to process
