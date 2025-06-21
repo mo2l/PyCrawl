@@ -15,6 +15,10 @@ A Python web crawler that searches for broken links and resources on websites.
 ## Installation
 
 ```bash
+# Clone the repository
+git clone git@github.com:mo2l/PyCrawl.git
+cd PyCrawl
+
 # Install the package
 pip install -e .
 ```

@@ -167,11 +167,40 @@ python -m pytest --cov=pycrawl
 
 ## Development Workflow
 
-1. Create a new branch for your feature or bugfix.
-2. Write tests for your changes.
-3. Implement your changes.
-4. Ensure all tests pass and code quality checks succeed.
-5. Submit a pull request.
+### Git Workflow
+
+The project is hosted on GitHub at [mo2l/PyCrawl](https://github.com/mo2l/PyCrawl).
+
+1. Clone the repository:
+   ```bash
+   git clone git@github.com:mo2l/PyCrawl.git
+   cd PyCrawl
+   ```
+
+2. Create a new branch for your feature or bugfix:
+   ```bash
+   git checkout -b feature/your-feature-name
+   # or
+   git checkout -b fix/your-bugfix-name
+   ```
+
+3. Write tests for your changes.
+4. Implement your changes.
+5. Ensure all tests pass and code quality checks succeed.
+6. Commit your changes with descriptive commit messages:
+   ```bash
+   git add .
+   git commit -m "Add feature: your feature description"
+   ```
+
+7. Push your branch to GitHub:
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+
+8. Create a pull request on GitHub.
+9. Address any review comments and make necessary changes.
+10. Once approved, your changes will be merged into the main branch.
 
 ## Authentication
 
