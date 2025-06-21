@@ -7,7 +7,12 @@ A Python web crawler that searches for broken links and resources on websites.
 - Crawls websites and checks for broken links and resources
 - Validates different types of resources (links, images, stylesheets, scripts)
 - Generates detailed reports of broken resources
-- Provides statistics about the crawl
+- Provides comprehensive statistics about the crawl
+- Includes detailed performance metrics:
+  - Total crawl time and requests
+  - Crawl speed (URLs/second, requests/second)
+  - Average processing time per URL
+  - Breakdown of time spent on fetching, parsing, and resource checking
 - High-performance crawling with:
   - Response caching to avoid repeated requests
   - Efficient parallel processing of URLs and resources
@@ -68,6 +73,13 @@ stats = checker.get_statistics()
 print(f"Total URLs crawled: {stats['total_urls_crawled']}")
 print(f"Total resources checked: {stats['total_resources']}")
 print(f"Broken resources: {stats['broken_resources']}")
+
+# Access performance metrics
+if 'performance' in stats:
+    perf = stats['performance']
+    print(f"Total crawl time: {perf['total_time']}s")
+    print(f"Crawl speed: {perf['urls_per_second']} URLs/s")
+    print(f"Average URL processing time: {perf['avg_url_processing_time']}s")
 ```
 
 ### Command Line Tool
@@ -121,6 +133,17 @@ Broken resources: 3 (6.0%)
 Broken resources by type:
   link: 2
   image: 1
+
+Performance Metrics:
+Total crawl time: 5.23s
+Total HTTP requests: 62
+Crawl speed: 1.91 URLs/s, 11.85 requests/s
+
+Average Times:
+  URL processing: 0.523s per URL
+  URL fetching: 0.312s per URL
+  Resource extraction: 0.105s per URL
+  Resource checking: 0.042s per resource
 ```
 
 ## Development

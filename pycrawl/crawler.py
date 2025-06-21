@@ -78,6 +78,15 @@ class BrokenLinkChecker:
             "User-Agent": self.user_agent
         }
 
+        # Performance metrics
+        self.crawl_start_time: Optional[float] = None
+        self.crawl_end_time: Optional[float] = None
+        self.url_processing_times: Dict[str, float] = {}
+        self.fetch_times: Dict[str, float] = {}
+        self.extraction_times: Dict[str, float] = {}
+        self.resource_check_times: Dict[str, float] = {}
+        self.total_requests: int = 0
+
     @lru_cache(maxsize=1024)
     def is_valid_url(self, url: str) -> bool:
         """
@@ -289,6 +298,15 @@ class BrokenLinkChecker:
         Returns:
             Dict[str, List[Resource]]: Dictionary mapping resource types to lists of broken resources
         """
+        # Reset performance metrics
+        self.crawl_start_time = time.time()
+        self.crawl_end_time = None
+        self.url_processing_times = {}
+        self.fetch_times = {}
+        self.extraction_times = {}
+        self.resource_check_times = {}
+        self.total_requests = 0
+
         # Add the base URL to the queue
         self.queued_urls.add(self.base_url)
 
@@ -344,6 +362,18 @@ class BrokenLinkChecker:
                     except Exception as e:
                         logger.error(f"Error processing URL {url}: {e}")
 
+        # Record end time
+        self.crawl_end_time = time.time()
+
+        # Log performance summary
+        total_time = self.crawl_end_time - self.crawl_start_time
+        urls_per_second = len(self.visited_urls) / total_time if total_time > 0 else 0
+        requests_per_second = self.total_requests / total_time if total_time > 0 else 0
+
+        logger.info(f"Crawl completed in {total_time:.2f}s")
+        logger.info(f"Processed {len(self.visited_urls)} URLs ({urls_per_second:.2f} URLs/s)")
+        logger.info(f"Made {self.total_requests} requests ({requests_per_second:.2f} requests/s)")
+
         # Return the broken resources grouped by type
         return self._group_broken_resources()
 
@@ -362,10 +392,17 @@ class BrokenLinkChecker:
         logger.info(f"Processing URL: {url} (depth: {depth}/{self.max_depth})")
         new_urls = set()
 
-        start_time = time.time()
+        url_start_time = time.time()
 
         # Fetch the URL
+        fetch_start_time = time.time()
         html, status_code, error = self.fetch_url(url)
+        fetch_end_time = time.time()
+
+        # Track fetch time
+        fetch_time = fetch_end_time - fetch_start_time
+        self.fetch_times[url] = fetch_time
+        self.total_requests += 1
 
         # If the URL is broken, add it to the broken resources
         if error:
@@ -378,16 +415,27 @@ class BrokenLinkChecker:
             )
             self.broken_resources.append(resource)
             self.all_resources[url] = resource
+
+            # Track total processing time for this URL
+            url_end_time = time.time()
+            self.url_processing_times[url] = url_end_time - url_start_time
+
             return new_urls
 
         # Extract resources from the HTML
+        extraction_start_time = time.time()
         resources = self.extract_resources(html, url)
+        extraction_end_time = time.time()
 
-        # Log resource extraction time for performance monitoring
-        extraction_time = time.time() - start_time
+        # Track extraction time
+        extraction_time = extraction_end_time - extraction_start_time
+        self.extraction_times[url] = extraction_time
         logger.debug(f"Resource extraction for {url} took {extraction_time:.2f}s")
 
         # Check each resource in parallel
+        resource_check_start_time = time.time()
+        resource_check_count = 0
+
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # Submit all resource checks
             future_to_resource = {
@@ -401,6 +449,8 @@ class BrokenLinkChecker:
                 try:
                     checked_resource = future.result()
                     self.all_resources[checked_resource.url] = checked_resource
+                    resource_check_count += 1
+                    self.total_requests += 1
 
                     if checked_resource.is_broken:
                         self.broken_resources.append(checked_resource)
@@ -411,8 +461,16 @@ class BrokenLinkChecker:
                 except Exception as e:
                     logger.error(f"Error checking resource {resource.url}: {e}")
 
-        # Log total processing time for performance monitoring
-        total_time = time.time() - start_time
+        # Track resource check time
+        resource_check_end_time = time.time()
+        resource_check_time = resource_check_end_time - resource_check_start_time
+        if resource_check_count > 0:
+            self.resource_check_times[url] = resource_check_time / resource_check_count  # Average time per resource
+
+        # Track total processing time for this URL
+        url_end_time = time.time()
+        total_time = url_end_time - url_start_time
+        self.url_processing_times[url] = total_time
         logger.debug(f"Total processing for {url} took {total_time:.2f}s")
 
         return new_urls
@@ -514,12 +572,12 @@ class BrokenLinkChecker:
 
         return "\n".join(report)
 
-    def get_statistics(self) -> Dict[str, Union[int, float]]:
+    def get_statistics(self) -> Dict[str, Any]:
         """
-        Get statistics about the crawl.
+        Get statistics about the crawl, including performance metrics.
 
         Returns:
-            Dict[str, Union[int, float]]: Dictionary of statistics
+            Dict[str, Any]: Dictionary of statistics and performance metrics
         """
         total_resources = len(self.all_resources)
         broken_count = len(self.broken_resources)
@@ -540,7 +598,8 @@ class BrokenLinkChecker:
                     broken_by_type[resource.resource_type] = 0
                 broken_by_type[resource.resource_type] += 1
 
-        return {
+        # Basic statistics
+        stats = {
             "total_urls_crawled": len(self.visited_urls),
             "total_resources": total_resources,
             "broken_resources": broken_count,
@@ -548,3 +607,31 @@ class BrokenLinkChecker:
             "resource_types": resource_types,
             "broken_by_type": broken_by_type
         }
+
+        # Performance metrics
+        if self.crawl_start_time and self.crawl_end_time:
+            total_time = self.crawl_end_time - self.crawl_start_time
+
+            # Calculate average times
+            avg_url_time = sum(self.url_processing_times.values()) / len(self.url_processing_times) if self.url_processing_times else 0
+            avg_fetch_time = sum(self.fetch_times.values()) / len(self.fetch_times) if self.fetch_times else 0
+            avg_extraction_time = sum(self.extraction_times.values()) / len(self.extraction_times) if self.extraction_times else 0
+            avg_resource_check_time = sum(self.resource_check_times.values()) / len(self.resource_check_times) if self.resource_check_times else 0
+
+            # Calculate rates
+            urls_per_second = len(self.visited_urls) / total_time if total_time > 0 else 0
+            requests_per_second = self.total_requests / total_time if total_time > 0 else 0
+
+            # Add performance metrics to statistics
+            stats["performance"] = {
+                "total_time": round(total_time, 2),  # Total crawl time in seconds
+                "total_requests": self.total_requests,
+                "urls_per_second": round(urls_per_second, 2),
+                "requests_per_second": round(requests_per_second, 2),
+                "avg_url_processing_time": round(avg_url_time, 3),  # Average time to process a URL in seconds
+                "avg_fetch_time": round(avg_fetch_time, 3),  # Average time to fetch a URL in seconds
+                "avg_extraction_time": round(avg_extraction_time, 3),  # Average time to extract resources in seconds
+                "avg_resource_check_time": round(avg_resource_check_time, 3)  # Average time to check a resource in seconds
+            }
+
+        return stats

@@ -109,6 +109,19 @@ def main():
             for resource_type, count in stats['broken_by_type'].items():
                 print(f"  {resource_type}: {count}")
 
+        # Print performance metrics if available
+        if 'performance' in stats:
+            perf = stats['performance']
+            print("\nPerformance Metrics:")
+            print(f"Total crawl time: {perf['total_time']}s")
+            print(f"Total HTTP requests: {perf['total_requests']}")
+            print(f"Crawl speed: {perf['urls_per_second']} URLs/s, {perf['requests_per_second']} requests/s")
+            print("\nAverage Times:")
+            print(f"  URL processing: {perf['avg_url_processing_time']}s per URL")
+            print(f"  URL fetching: {perf['avg_fetch_time']}s per URL")
+            print(f"  Resource extraction: {perf['avg_extraction_time']}s per URL")
+            print(f"  Resource checking: {perf['avg_resource_check_time']}s per resource")
+
         # Return non-zero exit code if broken links were found
         if stats['broken_resources'] > 0:
             return 1

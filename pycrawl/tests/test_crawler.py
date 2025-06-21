@@ -407,7 +407,7 @@ class TestBrokenLinkChecker:
         # Get statistics
         stats = checker.get_statistics()
 
-        # Verify
+        # Verify basic statistics
         assert stats["total_urls_crawled"] == 2
         assert stats["total_resources"] == 4
         assert stats["broken_resources"] == 2
@@ -417,3 +417,68 @@ class TestBrokenLinkChecker:
         assert stats["resource_types"]["stylesheet"] == 1
         assert stats["broken_by_type"]["link"] == 1
         assert stats["broken_by_type"]["stylesheet"] == 1
+
+        # Verify that performance metrics are not included when timing data is not available
+        assert "performance" not in stats
+
+    def test_get_statistics_with_performance_metrics(self):
+        """Test statistics generation with performance metrics"""
+        checker = BrokenLinkChecker("https://example.com")
+
+        # Add visited URLs
+        checker.visited_urls = {"https://example.com", "https://example.com/page1"}
+
+        # Add resources
+        checker.all_resources = {
+            "https://example.com/page1": Resource(url="https://example.com/page1", resource_type="link"),
+            "https://example.com/page2": Resource(url="https://example.com/page2", resource_type="link", is_broken=True)
+        }
+
+        # Add broken resources
+        checker.broken_resources = [checker.all_resources["https://example.com/page2"]]
+
+        # Add performance metrics
+        checker.crawl_start_time = 1000.0
+        checker.crawl_end_time = 1010.0  # 10 seconds
+        checker.total_requests = 5
+
+        # Add URL processing times
+        checker.url_processing_times = {
+            "https://example.com": 2.0,
+            "https://example.com/page1": 3.0
+        }
+
+        # Add fetch times
+        checker.fetch_times = {
+            "https://example.com": 1.0,
+            "https://example.com/page1": 1.5
+        }
+
+        # Add extraction times
+        checker.extraction_times = {
+            "https://example.com": 0.5,
+            "https://example.com/page1": 0.7
+        }
+
+        # Add resource check times
+        checker.resource_check_times = {
+            "https://example.com": 0.2,
+            "https://example.com/page1": 0.3
+        }
+
+        # Get statistics
+        stats = checker.get_statistics()
+
+        # Verify that performance metrics are included
+        assert "performance" in stats
+        perf = stats["performance"]
+
+        # Verify performance metrics
+        assert perf["total_time"] == 10.0
+        assert perf["total_requests"] == 5
+        assert perf["urls_per_second"] == 0.2  # 2 URLs / 10 seconds
+        assert perf["requests_per_second"] == 0.5  # 5 requests / 10 seconds
+        assert perf["avg_url_processing_time"] == 2.5  # (2.0 + 3.0) / 2
+        assert perf["avg_fetch_time"] == 1.25  # (1.0 + 1.5) / 2
+        assert perf["avg_extraction_time"] == 0.6  # (0.5 + 0.7) / 2
+        assert perf["avg_resource_check_time"] == 0.25  # (0.2 + 0.3) / 2
